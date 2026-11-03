@@ -1,3 +1,5 @@
+**Authors:** Abid Hasan Zim, Zerin Shaima Meem  
+
 # Description
 
 CampusFix is a mobile-friendly web application for handling maintenance requests in University of Nebraska Omaha residence halls. Right now, students at the Dodge and Scott campuses use different forms, portals, and phone contacts to report problems. CampusFix would give residents one place to submit requests, check progress, choose when staff may enter their rooms, and report problems that come back after a repair. Facilities supervisors would review requests, decide the category and priority, combine duplicate reports, and assign technicians. Technicians would use the system to see their jobs and record the repairs they make. Housing administrators would use the records to review workload, response times, and equipment with repeated problems. The system may suggest categories, priorities, and possible duplicates, but supervisors make the final decisions. CampusFix does not replace emergency phone reporting or the university's systems for budgeting, procurement, staff scheduling, billing, and building access.
@@ -9,6 +11,20 @@ CampusFix is a mobile-friendly web application for handling maintenance requests
 3. **G3 — Help technicians finish and document repairs.** Technicians need clear assignment details and a reliable record of completed or blocked work.
 4. **G4 — Give housing administrators useful maintenance data.** Reports should show workload, response times, and equipment that may need replacement.
 5. **G5 — Keep the process dependable and accountable.** The system should send useful updates, flag delays, and record important decisions, including any changes to automated suggestions.
+
+# Non-goals
+
+CampusFix will not:
+
+1. Dispatch or coordinate emergency response. Emergencies go to the front desk, the RA on duty, or the Scott Campus 24-hour line (FR-001, FR-019, NFR-09).
+2. Import records from, synchronize with, or change Freshdesk, the Scott Campus resident portal, Smartsheet, or Maxient.
+3. Bill residents for damage (MavLINK) or manage building access and keys (MavCARD).
+4. Handle budgeting, purchasing, or parts inventory. A hold records the part name only (FR-011).
+5. Schedule staff shifts. Technician availability comes only from CampusFix visit windows (FR-008).
+6. Edit housing assignment data. CampusFix only reads it (FR-001, FR-019).
+7. Merge two work orders that have both been dispatched, or cancel a duplicate dispatch (FR-007).
+8. Make final triage decisions automatically. Suggestions never set final values or merge reports (FR-014).
+9. Provide a native mobile app. CampusFix is a mobile-friendly web application.
 
 # Domain Model
 
@@ -96,14 +112,16 @@ The university supplies these per campus. This specification does not set them, 
 |---|---|---|
 | `urgentResponseLimit` | Longest an urgent request may stay `Submitted` before escalation | FR-015 |
 | `holdLimit` | Longest a work order may stay `On Hold` before escalation | FR-015 |
-| `minEntryNotice` | **At least 24 hours for routine entry**, per HRL Community Policies 2025–26. A shorter notice period is permitted once a repair order has been filed; the allowed shorter period must be provided by the university for that case (not guessed). | FR-004 |
+| `minEntryNotice` | **At least 24 hours for routine entry**, per HRL Community Policies 2025–26. | FR-004 |
+| `repairOrderNotice` | Shorter notice that HRL policy permits once a repair order has been filed. Supplied by the university; if unset, `minEntryNotice` applies to every visit. | FR-004 |
 | `repeatRepairCount`, `repeatRepairWindow` | Equipment with at least this many work orders within this window is a replacement candidate | FR-013 |
 | `closureConfirmationPeriod` | Optional time after `Completed` before a request closes automatically; if unset, resident confirmation is required | FR-020 |
 | `retentionPeriod` | When photographs and entry records are archived or deleted | NFR-07, NFR-14 |
 | `maxPhotoBytes`, `maxPhotosPerRequest` | Photo size and count limits, unspecified in Project 1 | FR-001, FR-017 |
 | `emergencyContacts` | Front desk, RA on duty, and Scott Campus 24-hour line shown to residents | FR-001, NFR-09 |
+| `suggestionsEnabled` | Turns category, priority, and duplicate suggestions on or off for the campus | FR-014 |
 
-**Policy rule:** Routine entry requires at least 24 hours' notice; shorter notice is permitted once a repair order has been filed (HRL Community Policies 2025–26). Staff must knock and announce, and the actual entry/attempt must be recorded. The campus must configure a defensible shorter period where the exception applies.
+**Policy rule:** Routine entry requires at least 24 hours' notice; shorter notice is permitted once a repair order has been filed (HRL Community Policies 2025–26). Staff must knock and announce, and the actual entry/attempt must be recorded. The shorter period applies only when the campus has configured `repairOrderNotice`.
 
 # Functional Requirements
 
@@ -111,7 +129,7 @@ The university supplies these per campus. This specification does not set them, 
 
 - `FR-001`–`FR-016` correspond to Project 1 `FR-1`–`FR-16`.
 - `FR-017`–`FR-020` cover behavior that Project 1's wireframes, navigation model, and statecharts show but that had no requirement.
-- `NFR-01`–`NFR-14` correspond to Project 1 Appendix A.
+- Nonfunctional requirements are in their own section after the functional requirements.
 - `[MVP]` keeps the Project 1 classification.
 - Each requirement names the goal(s) it supports.
 
@@ -167,7 +185,7 @@ The university supplies these per campus. This specification does not set them, 
 
 1. For a non-common area, the owner MUST choose `Present`, `Allow entry while away`, or `Preferred time slots`. `Preferred time slots` requires at least one slot.
 2. The owner MAY change the preference until the request is `Completed` or `Closed`. Each change MUST be kept in history and shown at once to the supervisor and the assigned technician.
-3. Whenever a visit window is set (T4, T7, T10, or a new window under FR-008), the system MUST send entry notice to the owner and record the send time. Routine visits require at least 24 hours' notice. Once a repair order has been filed, shorter notice is permitted under HRL policy, but the authorized shorter interval must be supplied by the university and recorded before a shorter-notice window can be saved.
+3. Whenever a visit window is set (T4, T7, T10, or a new window under FR-008), the system MUST send entry notice to the owner and record the send time. Routine visits require at least 24 hours' notice. Once a repair order has been filed, shorter notice is permitted under HRL policy, but only when the campus has configured `repairOrderNotice`; otherwise `minEntryNotice` applies.
 4. If the preference changes after notice was sent, the pending notice MUST be cancelled. Entry MUST NOT occur until a new window is set and noticed.
 5. When the preference is `Preferred time slots`, the visit window SHOULD fall inside a slot. A window outside every slot MUST require a supervisor reason, which is stored.
 6. If the preference is `Present` and the resident is absent, the technician MUST NOT enter and MUST record `No Access` (FR-011).
@@ -329,24 +347,29 @@ The university supplies these per campus. This specification does not set them, 
 3. The owner MUST receive the FR-002 confirmation and then has the same rights as for a request they submitted themselves.
 4. The staff role MUST be limited to creating requests and viewing the requests it recorded.
 
-## Quality and policy constraints
+# Nonfunctional Requirements
 
-| ID | Constraint | Tested by |
-|---|---|---|
-| NFR-01 | Room details, photographs, and entry records MUST be visible only to the owner, the campus's supervisors, and the assigned technician; administrators see aggregates only (FR-012). | AC-N01.1 |
-| NFR-02 | The system MUST log every view and change of a request or work order (user, time, action, changed fields), including suggestion overrides. | AC-N02.1, AC-006.3 |
-| NFR-03 | Automated results are recommendations only (FR-014). | AC-014.4 |
-| NFR-04 | Every request can be submitted without photographs (FR-001). | AC-001.4 |
-| NFR-05 | All screens MUST meet WCAG 2.1 Level AA and support keyboard-only use and screen readers. | AC-N05.1 |
-| NFR-06 | Photo privacy warning before upload (FR-001). | AC-001.6 |
-| NFR-07 | Photographs and entry records MUST be archived or deleted after `retentionPeriod`. | AC-N07.1 |
-| NFR-08 | Entry notice and knock-and-announce records (FR-004). | AC-004.2 – AC-004.5 |
-| NFR-09 | `emergencyContacts` MUST be visible on every resident request screen (dashboard, submit form, request details). Staff can record phone reports (FR-019). | AC-N09.1, AC-019.1 |
-| NFR-10 | Users MUST authenticate through university SSO. UNO email is the formal notification channel. | AC-N10.1 |
-| NFR-11 | Drafts are saved and failed photo uploads are retried (FR-001). | AC-N11.1 |
-| NFR-12 | Resident and technician screens MUST be usable on a phone. | AC-009.4 |
-| NFR-13 | Notice, escalation, approval, and vendor rules MUST be configurable separately for the Dodge and Scott campuses. | AC-N13.1 |
-| NFR-14 | A user without a current room assignment MUST NOT submit new requests but MUST keep read access to their own past requests until `retentionPeriod`. | AC-N14.1 |
+Requirements are listed in priority order; priorities 1–7 shape the architecture and 8–15 constrain the interface and operations. NFR-01 to NFR-14 keep their Project 1 Appendix A numbers. NFR-15 to NFR-17 were added in Project 2 after checking which goals and acceptance criteria depend on system-wide behavior rather than on one feature. Each row names the clauses that need it.
+
+| Priority | ID | Quality | Requirement | Derived from | Tested by |
+|---|---|---|---|---|---|
+| 1 | NFR-01 | Privacy | Room details, photographs, entry records, and resident identity MUST be visible only to the owner, the campus's supervisors, the assigned technician, and the front-desk staff member who recorded the request. Administrators see aggregates only. A record the user may not see MUST be reported as not found. | G1; FR-003.2, FR-009.1, FR-012.3, FR-019.4 | AC-003.3, AC-009.1, AC-N01.1 |
+| 2 | NFR-15 | Integrity | Every status change MUST be checked against the transition table and saved in one transaction with its status history, audit entry, and notifications; if any part fails, nothing is saved. When two users change the same request or work order at once, exactly one change MUST succeed and the other user MUST be told the record has changed. | Status lifecycle; FR-002.2; FR-007.2; FR-008.1 | AC-N15.1, AC-N15.2 |
+| 3 | NFR-02 | Accountability | Every view and change of a request or work order MUST be logged with user, time, action, and changed fields, including suggestion overrides. The log MUST NOT be editable through CampusFix. | G5; FR-006.4, FR-014.5 | AC-006.3, AC-N02.1 |
+| 4 | NFR-08 | Policy compliance | Entry notice MUST follow HRL Community Policies 2025–26 (`minEntryNotice`, `repairOrderNotice`). Knock-and-announce, entries, and failed attempts MUST be recorded. | FR-004.3–FR-004.7; Configuration values | AC-004.2 – AC-004.5 |
+| 5 | NFR-16 | Reliability | Notifications for a saved event MUST NOT be lost. If UNO email is unavailable, the status change still stands, the activity-feed entry still appears, and the email is retried automatically. A retry MUST NOT send the same notification twice. | G5; FR-002.1–FR-002.2 | AC-N16.1 |
+| 6 | NFR-17 | Time correctness | Times MUST be stored in UTC and shown in Central time (America/Chicago). Notice periods, escalation limits, and closure periods MUST be measured in elapsed time from the server clock; a value exactly at the limit satisfies it. | FR-004.3, FR-015, FR-020.2 | AC-004.2, AC-N17.1 |
+| 7 | NFR-03 | Human control | Suggestions MUST remain recommendations that need supervisor confirmation, and intake and triage MUST keep working when suggestions are disabled or fail. | G2, G5; FR-014.3–FR-014.4 | AC-014.3, AC-014.4 |
+| 8 | NFR-10 | Authentication | Users MUST authenticate through university SSO. UNO email is the formal notification channel. | Domain Model (external systems); FR-002.1 | AC-N10.1 |
+| 9 | NFR-09 | Safety | `emergencyContacts` MUST be visible on every resident request screen (dashboard, submit form, request details). | FR-001.9; Non-goals | AC-001.7, AC-N09.1 |
+| 10 | NFR-05 | Accessibility | All screens MUST meet WCAG 2.1 Level AA and support keyboard-only use and screen readers. | G1 | AC-N05.1 |
+| 11 | NFR-12 | Mobile use | Resident and technician screens MUST be usable at phone width without horizontal scrolling. | G1, G3; FR-009.4 | AC-009.4 |
+| 12 | NFR-13 | Configurability | Every value in the Configuration values table MUST be set separately for the Dodge and Scott campuses. | Configuration values | AC-N13.1 |
+| 13 | NFR-07 | Data retention | Photographs and entry records MUST be archived or deleted after `retentionPeriod`. | Configuration values | AC-N07.1 |
+| 14 | NFR-14 | Data lifecycle | A user without a current room assignment MUST NOT submit new requests but MUST keep read access to their own past requests until `retentionPeriod`. | FR-001.1 | AC-N14.1 |
+| 15 | NFR-11 | Input resilience | Drafts SHOULD be saved and failed photo uploads retried without losing entered data. | FR-001.10 | AC-N11.1 |
+
+Project 1's NFR-04 (photos optional) and NFR-06 (photo privacy warning) are single-form rules, so they now live in FR-001.4 and FR-001.6 and are tested by AC-001.4 and AC-001.6.
 
 # Acceptance Criteria
 
@@ -516,7 +539,7 @@ Each criterion refines one requirement into a check that passes or fails. `AC-<n
 - **AC-020.3** With `closureConfirmationPeriod` unset, the request stays `Completed` until the owner confirms.
 - **AC-020.4** Confirming resolution of a request that is not `Completed` is rejected.
 
-## Quality and policy constraints
+## Nonfunctional requirements
 
 - **AC-N01.1** A technician cannot open the photographs or entry records of a work order not assigned to them. A resident cannot open another resident's photograph by direct link.
 - **AC-N02.1** Opening a request and overriding a suggestion each create an audit entry with user, time, and action.
@@ -527,5 +550,9 @@ Each criterion refines one requirement into a check that passes or fails. `AC-<n
 - **AC-N11.1** Leaving the form mid-entry and returning restores the saved draft. A failed photo upload is retried without losing typed fields.
 - **AC-N13.1** Changing `holdLimit` for the Dodge campus does not change it for the Scott campus.
 - **AC-N14.1** After a resident's room assignment ends, they cannot submit a new request but can still view their past requests until their configured retention period ends.
+- **AC-N15.1** Two supervisors confirm triage for the same `Submitted` request at the same time. Exactly one acknowledgment and one work order are saved, the second supervisor is told the request has changed, and the owner receives one notification.
+- **AC-N15.2** If writing any part of a transition fails (status, history, audit entry, or notification), none of it is saved and the record keeps its previous status.
+- **AC-N16.1** With UNO email unavailable, completing a work order linked to two requests still sets the work order and both requests to `Completed` and shows each owner a feed entry. Each owner's email is sent exactly once after email returns.
+- **AC-N17.1** With no `repairOrderNotice` configured, a window saved at 09:00 CDT on Saturday, 31 October 2026 that starts at 08:00 CST on Sunday, 1 November 2026 is accepted (24 elapsed hours); one starting at 07:59 CST is rejected.
 
 <!-- Project 2 design decisions for team review: Resident Urgent triggers pre-ack escalation; assignment+visit-window are atomic; transfers return unassigned to Acknowledged; authorized staff clear holds; the system then performs the status transition; No Access is rescheduled by supervisor rather than handled as hold; closure is owner-confirmed or automatic after an optional campus-configured period. Photo limits, any shorter-than-24-hour permitted notice, and closure period require university confirmation. -->
