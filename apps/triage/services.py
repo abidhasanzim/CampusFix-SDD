@@ -6,10 +6,27 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from apps.accounts.models import Person
+from django.db import transaction as db_transaction
+
+from apps.accounts import services as accounts_services
+from apps.accounts.models import Person, StaffRole
 from apps.housing.models import Campus
+from apps.maintenance import services as maintenance_services
 from apps.maintenance.models import MaintenanceRequest, WorkOrder
+from apps.notifications import services as notifications_services
+from apps.notifications.models import Notification
 from apps.triage.models import Escalation
+
+_TRIAGE_ELIGIBLE_STATES = {MaintenanceRequest.STATE_SUBMITTED, MaintenanceRequest.STATE_REOPENED}
+
+
+def _require_supervisor(supervisor: Person, campus: Campus) -> None:
+    is_supervisor = any(
+        role.role_type == StaffRole.SUPERVISOR and role.campus_id == campus.id
+        for role in accounts_services.get_staff_roles(supervisor)
+    )
+    if not is_supervisor:
+        raise PermissionError("supervisor role required for this campus")
 
 
 def get_triage_item(supervisor: Person, tracking_number: str, now: datetime) -> dict:
@@ -25,7 +42,31 @@ def get_triage_item(supervisor: Person, tracking_number: str, now: datetime) -> 
     automatic merge or final priority); NFR-03; AC-015, AC-018.
     Injected: `now` for the audit "VIEW" entry (via `access`).
     """
-    raise NotImplementedError
+    try:
+        request = MaintenanceRequest.objects.select_related("suggestion").get(tracking_number=tracking_number)
+    except MaintenanceRequest.DoesNotExist:
+        raise LookupError("not found")
+
+    if request.request_state not in _TRIAGE_ELIGIBLE_STATES:
+        raise LookupError("not found")
+
+    suggestion = getattr(request, "suggestion", None)
+
+    return {
+        "tracking_number": request.tracking_number,
+        "status": request.request_state,
+        "version": request.version,
+        "resident_urgency": request.resident_urgency,
+        "suggestion": {
+            "suggested_category": suggestion.suggested_category if suggestion else "",
+            "suggested_priority": suggestion.suggested_priority if suggestion else "",
+            "duplicate_candidate_tracking_numbers": (
+                suggestion.duplicate_candidate_tracking_numbers if suggestion else []
+            ),
+            "final_category": (suggestion.final_category or None) if suggestion else None,
+            "final_priority": (suggestion.final_priority or None) if suggestion else None,
+        },
+    }
 
 
 def confirm_triage(supervisor: Person, tracking_number: str, category: str, priority: str, now: datetime, expected_version: int) -> WorkOrder:
@@ -40,7 +81,53 @@ def confirm_triage(supervisor: Person, tracking_number: str, category: str, prio
     fail); NFR-15; AC-002, AC-015, AC-046.
     Injected: `now` for the T2/T14 history and the triage decision timestamp.
     """
-    raise NotImplementedError
+    if not category or not priority:
+        raise ValueError("category and priority are required")
+
+    valid_priorities = {choice[0] for choice in WorkOrder.PRIORITY_CHOICES}
+    if priority not in valid_priorities:
+        raise ValueError(f"priority must be one of {sorted(valid_priorities)}")
+
+    try:
+        request = MaintenanceRequest.objects.select_related("suggestion").get(tracking_number=tracking_number)
+    except MaintenanceRequest.DoesNotExist:
+        raise LookupError("not found")
+
+    _require_supervisor(supervisor, request.building.campus)
+
+    is_reopened = request.request_state == MaintenanceRequest.STATE_REOPENED
+    transition_id = "T14" if is_reopened else "T2"
+    prior_work_order = request.work_orders.order_by("-created_at").first() if is_reopened else None
+
+    with db_transaction.atomic():
+        request = maintenance_services.transition(
+            record=request,
+            transition_id=transition_id,
+            to_status=MaintenanceRequest.STATE_ACKNOWLEDGED,
+            trigger="supervisor_confirms_triage",
+            actor=supervisor,
+            now=now,
+            expected_version=expected_version,
+        )
+
+        work_order = maintenance_services.create_work_order(
+            requests=[request], category=category, priority=priority, prior_work_order=prior_work_order, now=now
+        )
+
+        suggestion = getattr(request, "suggestion", None)
+        if suggestion is not None:
+            maintenance_services.confirm_triage_decision(suggestion, category, priority, supervisor, now)
+
+        notifications_services.record_notification(
+            recipient=request.owner,
+            event="ACKNOWLEDGED",
+            tracking_number=request.tracking_number,
+            channel=Notification.CHANNEL_EMAIL,
+            content=f"Your request {request.tracking_number} has been acknowledged.",
+            now=now,
+        )
+
+    return work_order
 
 
 def merge_duplicates(supervisor: Person, tracking_numbers: list[str], category: str, priority: str, now: datetime) -> WorkOrder:
