@@ -30,4 +30,11 @@ def record_change(actor: Person, record_type: str, record_id: str, changed_field
     Spec rule: NFR-02; FR-006, FR-014 (suggestion overrides are logged).
     Injected: `now` as the recorded time (server clock).
     """
-    raise NotImplementedError
+    return AuditEntry.objects.create(
+        actor_sso_subject=actor.sso_subject,
+        action=AuditEntry.CHANGE,
+        record_type=record_type,
+        record_id=record_id,
+        changed_fields=list(changed_fields),
+        occurred_at=now,
+    )

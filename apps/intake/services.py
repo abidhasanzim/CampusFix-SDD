@@ -6,9 +6,121 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from apps.accounts.models import Person
+from django.db import transaction
+
+from apps.accounts.models import Person, StaffRole
+from apps.accounts import services as accounts_services
+from apps.audit import services as audit_services
+from apps.campus_settings import services as campus_settings_services
+from apps.campus_settings.models import CampusConfig
+from apps.entry import services as entry_services
+from apps.housing import services as housing_services
 from apps.intake.models import Draft
+from apps.maintenance import services as maintenance_services
 from apps.maintenance.models import MaintenanceRequest
+from apps.notifications import services as notifications_services
+from apps.notifications.models import Notification
+from apps.suggestions import services as suggestions_services
+from campusfix.exceptions import ValidationError
+
+
+def _create_request_from_form(
+    owner: Person, recorded_by: Person | None, form_data: dict, now: datetime
+) -> MaintenanceRequest:
+    """Shared validation/creation path for `submit_request` and
+    `submit_phone_report`: both resolve an owner and a recorder, then run
+    the identical required-field check and submission transaction.
+    """
+    assignment = housing_services.get_current_assignment(owner.sso_subject, now.date())
+    if assignment is None:
+        raise PermissionError("no_current_assignment")
+
+    area_type = form_data.get("area_type")
+    exact_location = form_data.get("exact_location")
+    description = form_data.get("description")
+    entry_preference_data = form_data.get("entry_preference") or {}
+
+    missing_fields = []
+    if not area_type:
+        missing_fields.append("area_type")
+    if not exact_location:
+        missing_fields.append("exact_location")
+    if not description:
+        missing_fields.append("description")
+    if area_type != MaintenanceRequest.AREA_COMMON and not entry_preference_data.get("preference"):
+        missing_fields.append("entry_preference")
+    if missing_fields:
+        raise ValidationError(missing_fields)
+
+    room = assignment.room
+    building = room.building
+    resident_urgency = form_data.get("resident_urgency") or MaintenanceRequest.URGENCY_NORMAL
+
+    with transaction.atomic():
+        request = maintenance_services.create_request(
+            owner=owner,
+            recorded_by=recorded_by,
+            building=building,
+            room=room,
+            area_type=area_type,
+            exact_location=exact_location,
+            description=description,
+            onset=form_data.get("onset"),
+            resident_urgency=resident_urgency,
+            now=now,
+        )
+
+        if entry_preference_data.get("preference"):
+            entry_services.set_preference(
+                request,
+                entry_preference_data["preference"],
+                entry_preference_data.get("time_slots", []),
+                now,
+            )
+
+        try:
+            suggestions_enabled = campus_settings_services.get_config(building.campus).suggestions_enabled
+        except CampusConfig.DoesNotExist:
+            suggestions_enabled = False
+
+        suggested_category = suggested_priority = ""
+        duplicate_tracking_numbers: list[str] = []
+        if suggestions_enabled:
+            try:
+                suggested_category, suggested_priority = suggestions_services.suggest_category_and_priority(
+                    description, photo_count=0
+                )
+                open_requests = list(
+                    MaintenanceRequest.objects.filter(building=building)
+                    .exclude(
+                        request_state__in=[MaintenanceRequest.STATE_COMPLETED, MaintenanceRequest.STATE_CLOSED]
+                    )
+                    .exclude(pk=request.pk)
+                )
+                duplicates = suggestions_services.find_duplicate_candidates(building, room, open_requests)
+                duplicate_tracking_numbers = [candidate.tracking_number for candidate in duplicates]
+            except ValueError:
+                suggested_category = suggested_priority = ""
+                duplicate_tracking_numbers = []
+
+        maintenance_services.save_suggestion(
+            request, suggested_category, suggested_priority, duplicate_tracking_numbers, now
+        )
+
+        audit_services.record_change(owner, "MaintenanceRequest", str(request.id), ["request_state"], now)
+
+        notifications_services.record_notification(
+            recipient=owner,
+            event="SUBMITTED",
+            tracking_number=request.tracking_number,
+            channel=Notification.CHANNEL_EMAIL,
+            content=f"Your request {request.tracking_number} has been submitted.",
+            now=now,
+        )
+
+        Draft.objects.filter(user=owner).delete()
+
+    return request
 
 
 def save_draft(person: Person, form_data: dict, now: datetime) -> Draft:
@@ -50,7 +162,7 @@ def submit_request(person: Person, form_data: dict, now: datetime) -> Maintenanc
     Injected: `now` for every timestamp in the transaction; the housing
     lookup and suggestion call happen through their own modules.
     """
-    raise NotImplementedError
+    return _create_request_from_form(owner=person, recorded_by=None, form_data=form_data, now=now)
 
 
 def submit_phone_report(staff: Person, resident: Person, form_data: dict, now: datetime) -> MaintenanceRequest:
@@ -63,7 +175,11 @@ def submit_phone_report(staff: Person, resident: Person, form_data: dict, now: d
     Spec rule: FR-019 (resident remains owner; staff identity saved as recordedBy).
     Injected: `now` for every timestamp in the transaction.
     """
-    raise NotImplementedError
+    if not any(role.role_type == StaffRole.FRONT_DESK for role in accounts_services.get_staff_roles(staff)):
+        raise PermissionError("staff member does not hold a front-desk role")
+
+    owner = resident if isinstance(resident, Person) else Person.objects.get(sso_subject=resident)
+    return _create_request_from_form(owner=owner, recorded_by=staff, form_data=form_data, now=now)
 
 
 def get_request_detail(person: Person, tracking_number: str, now: datetime) -> dict:

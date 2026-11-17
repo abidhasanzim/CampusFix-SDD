@@ -21,7 +21,15 @@ def record_notification(recipient: Person, event: str, tracking_number: str, cha
     owner, naming only that owner's tracking number).
     Injected: `now` as created_at.
     """
-    raise NotImplementedError
+    return Notification.objects.create(
+        recipient=recipient,
+        event=event,
+        tracking_number=tracking_number,
+        channel=channel,
+        status=Notification.STATUS_PENDING,
+        content=content,
+        created_at=now,
+    )
 
 
 def send_pending(now: datetime) -> int:

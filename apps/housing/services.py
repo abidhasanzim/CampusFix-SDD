@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+from django.db.models import Q
+
 from apps.housing.models import Building, Room, RoomAssignment
 
 
@@ -19,7 +21,12 @@ def get_current_assignment(sso_subject: str, as_of_date: date) -> RoomAssignment
     data); NFR-14 (a user whose assignment ended cannot submit new requests).
     Injected: none; this reads the local copy, not the university system.
     """
-    raise NotImplementedError
+    return (
+        RoomAssignment.objects.filter(resident_sso_subject=sso_subject, start_date__lte=as_of_date)
+        .filter(Q(end_date__isnull=True) | Q(end_date__gte=as_of_date))
+        .order_by("-start_date")
+        .first()
+    )
 
 
 def get_room(building: Building, room_number: str) -> Room:
@@ -30,7 +37,7 @@ def get_room(building: Building, room_number: str) -> Room:
     Spec rule: FR-001, FR-019 (building/room come from housing data).
     Injected: none.
     """
-    raise NotImplementedError
+    return Room.objects.get(building=building, room_number=room_number)
 
 
 def refresh_from_export(export_rows: list[dict], now: datetime) -> dict:
