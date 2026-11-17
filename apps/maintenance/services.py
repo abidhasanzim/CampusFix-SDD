@@ -284,7 +284,23 @@ def record_work(
     repair-tested confirmation required to complete).
     Injected: `now` as created_at/completed_at.
     """
-    raise NotImplementedError
+    if not diagnosis or not work_performed or not tested_confirmed:
+        raise ValueError("diagnosis, work_performed, and tested_confirmed are required")
+
+    work_record = WorkRecord.objects.create(
+        work_order=work_order,
+        technician=technician,
+        diagnosis=diagnosis,
+        work_performed=work_performed,
+        labor_hours=labor_hours,
+        repair_tested_confirmed=tested_confirmed,
+        completed_at=now,
+        created_at=now,
+    )
+    Part.objects.bulk_create(
+        Part(work_record=work_record, name=name, quantity=quantity) for name, quantity in parts
+    )
+    return work_record
 
 
 def create_hold_record(

@@ -75,7 +75,7 @@ items, but not expected to be implemented in this pass.
 ### Slice 4 — Technician fieldwork: start, record entry, complete
 - **Goal:** An assigned technician sees only their own assignments, starts a scheduled visit, records entry/failed-access, and completes a work order with required documentation, completing every linked request.
 - **Spec sources:** FR-009, FR-010, FR-004 (entry recording).
-- **Criteria:** AC-004, AC-017, AC-033, AC-035, E5 (labor-hours half), E7 (complete-work-order half).
+- **Criteria:** AC-004, AC-017, AC-033, AC-035, E7 (the `complete_work_order` half; the `AC-012` half of E7 was already satisfied by Slice 1).
 - **Tests that should turn green:** `tests/test_AC004_complete_work_order.py::test_AC004`.
 - **Skeleton to fill in:** `entry.record_visit`, `fieldwork.list_my_assignments`/`start_work`/`record_entry`/`record_no_access`, `maintenance.record_work`, `fieldwork.complete_work_order`, `access.get_viewable_work_order`; routes `GET /api/technician/assignments`, `POST .../start`, `POST .../entries`, `POST .../complete`, `POST .../no-access`.
 - **Depends on:** Slice 3.
@@ -85,7 +85,7 @@ items, but not expected to be implemented in this pass.
 ### Slice 5 — Hold, transfer, and clear-hold
 - **Goal:** A technician holds in-progress work or requests a transfer back to unassigned triage; a supervisor or the assigned technician clears a documented hold, resuming in place or rescheduling.
 - **Spec sources:** FR-011, FR-016.
-- **Criteria:** AC-005, AC-016, AC-021, AC-022, E5 (part-name half).
+- **Criteria:** AC-005, AC-016, AC-021, AC-022, E5.
 - **Skeleton to fill in:** `maintenance.create_hold_record`/`clear_hold_record`, `fieldwork.place_on_hold`/`request_transfer`/`clear_hold`; routes `.../hold`, `.../transfer`, `.../clear-hold`.
 - **Depends on:** Slice 4.
 - **Done when:** the listed criteria pass per test_plan.md and all prior slices' tests still pass.
