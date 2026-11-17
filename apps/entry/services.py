@@ -110,7 +110,17 @@ def record_visit(work_order: WorkOrder, person: Person, resident_present: bool, 
     not an unauthorized entry); FR-011; NFR-08; AC-035.
     Injected: `now` as occurred_at.
     """
-    raise NotImplementedError
+    if outcome == VisitRecord.OUTCOME_ENTERED and not knock_and_announce_confirmed:
+        raise ValueError("staff must knock and announce before entering")
+
+    return VisitRecord.objects.create(
+        work_order=work_order,
+        person=person,
+        occurred_at=now,
+        resident_present=resident_present,
+        knock_and_announce_confirmed=knock_and_announce_confirmed,
+        outcome=outcome,
+    )
 
 
 def purge_expired(retention_period: timedelta, now: datetime) -> int:

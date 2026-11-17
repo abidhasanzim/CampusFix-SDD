@@ -5,11 +5,29 @@ clear a hold. Supervisors use the clear-hold and equipment actions too.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+
+from django.db import transaction as db_transaction
 
 from apps.accounts.models import Person
+from apps.audit import services as audit_services
+from apps.entry import services as entry_services
 from apps.entry.models import VisitRecord
-from apps.maintenance.models import Equipment, HoldRecord, WorkOrder, WorkRecord
+from apps.maintenance import services as maintenance_services
+from apps.maintenance.models import Equipment, HoldRecord, MaintenanceRequest, StatusHistoryEntry, WorkOrder, WorkRecord
+from apps.notifications import services as notifications_services
+from apps.notifications.models import Notification
+from campusfix.exceptions import ValidationError
+
+
+def _get_assigned_work_order(technician: Person, work_order_number: str) -> WorkOrder:
+    try:
+        work_order = WorkOrder.objects.get(work_order_number=work_order_number)
+    except WorkOrder.DoesNotExist:
+        raise LookupError("not found")
+    if work_order.assigned_technician_id != technician.id:
+        raise PermissionError("technician is not assigned to this work order")
+    return work_order
 
 
 def list_my_assignments(technician: Person) -> list[WorkOrder]:
@@ -21,7 +39,11 @@ def list_my_assignments(technician: Person) -> list[WorkOrder]:
     Spec rule: FR-009; NFR-01, AC-033 (only this technician's own assignments).
     Injected: none.
     """
-    raise NotImplementedError
+    return list(
+        WorkOrder.objects.filter(assigned_technician=technician).prefetch_related(
+            "requests", "entry_notices", "visit_records", "work_records"
+        )
+    )
 
 
 def start_work(technician: Person, work_order_number: str, now: datetime, expected_version: int) -> WorkOrder:
@@ -33,7 +55,16 @@ def start_work(technician: Person, work_order_number: str, now: datetime, expect
     Spec rule: FR-010; T5.
     Injected: `now` as the T5 history timestamp.
     """
-    raise NotImplementedError
+    work_order = _get_assigned_work_order(technician, work_order_number)
+    return maintenance_services.transition(
+        record=work_order,
+        transition_id="T5",
+        to_status=WorkOrder.STATUS_IN_PROGRESS,
+        trigger="technician_starts_work",
+        actor=technician,
+        now=now,
+        expected_version=expected_version,
+    )
 
 
 def record_entry(technician: Person, work_order_number: str, resident_present: bool, knock_and_announce_confirmed: bool, outcome: str, now: datetime) -> VisitRecord:
@@ -47,7 +78,14 @@ def record_entry(technician: Person, work_order_number: str, resident_present: b
     Spec rule: FR-004, FR-010, FR-011; AC-035.
     Injected: `now` as occurred_at.
     """
-    raise NotImplementedError
+    try:
+        work_order = WorkOrder.objects.get(work_order_number=work_order_number)
+    except WorkOrder.DoesNotExist:
+        raise LookupError("not found")
+
+    return entry_services.record_visit(
+        work_order, technician, resident_present, knock_and_announce_confirmed, outcome, now
+    )
 
 
 def complete_work_order(
@@ -74,8 +112,74 @@ def complete_work_order(
     Spec rule: FR-010; AC-004, AC-017, AC-047; T11; Decision 20.
     Injected: `now` for the work record, T11 history, and per-owner
     notification timestamps.
+
+    Note: the private-room-entry-first rule in FR-010's last sentence is
+    not enforced here. AC-004's Gherkin and test_plan.md's AC-004 row never
+    exercise it, and test_AC004's fixture links a private-bedroom request
+    to the work order without ever recording an entry — enforcing the rule
+    would make that test fail. Decided with the user rather than silently
+    picked either way.
     """
-    raise NotImplementedError
+    missing_fields = []
+    if not diagnosis:
+        missing_fields.append("diagnosis")
+    if not work_performed:
+        missing_fields.append("work_performed")
+    if not tested_confirmed:
+        missing_fields.append("tested_confirmed")
+    if missing_fields:
+        raise ValidationError(missing_fields)
+
+    try:
+        labor_hours = Decimal(str(labor_hours))
+    except (InvalidOperation, TypeError):
+        raise ValueError("labor_hours must be a valid decimal number")
+    if labor_hours < 0:
+        raise ValueError("labor_hours must not be negative")
+
+    work_order = _get_assigned_work_order(technician, work_order_number)
+
+    with db_transaction.atomic():
+        work_order = maintenance_services.transition(
+            record=work_order,
+            transition_id="T11",
+            to_status=WorkOrder.STATUS_COMPLETED,
+            trigger="technician_completes_work_order",
+            actor=technician,
+            now=now,
+            expected_version=expected_version,
+        )
+
+        work_record = maintenance_services.record_work(
+            work_order, technician, diagnosis, work_performed, labor_hours, parts, tested_confirmed, now
+        )
+
+        for linked in work_order.requests.select_related("owner").all():
+            from_status = linked.request_state
+            linked.request_state = MaintenanceRequest.STATE_COMPLETED
+            linked.updated_at = now
+            linked.save(update_fields=["request_state", "updated_at"])
+
+            StatusHistoryEntry.objects.create(
+                record_type=StatusHistoryEntry.REQUEST,
+                record_id=linked.id,
+                from_status=from_status,
+                to_status=MaintenanceRequest.STATE_COMPLETED,
+                transition_id="T11",
+                changed_at=now,
+            )
+            audit_services.record_change(technician, "MaintenanceRequest", str(linked.id), ["request_state"], now)
+
+            notifications_services.record_notification(
+                recipient=linked.owner,
+                event="COMPLETED",
+                tracking_number=linked.tracking_number,
+                channel=Notification.CHANNEL_EMAIL,
+                content=f"Your request {linked.tracking_number} has been completed.",
+                now=now,
+            )
+
+    return work_record
 
 
 def place_on_hold(technician: Person, work_order_number: str, reason: str, part_name: str, next_action: str, now: datetime, expected_version: int) -> HoldRecord:
@@ -99,7 +203,28 @@ def record_no_access(technician: Person, work_order_number: str, resident_presen
     Spec rule: FR-004, FR-011; AC-020, AC-035; T6.
     Injected: `now` as occurred_at/history timestamp.
     """
-    raise NotImplementedError
+    work_order = _get_assigned_work_order(technician, work_order_number)
+
+    with db_transaction.atomic():
+        work_order = maintenance_services.transition(
+            record=work_order,
+            transition_id="T6",
+            to_status=WorkOrder.STATUS_NO_ACCESS,
+            trigger="technician_records_no_access",
+            actor=technician,
+            now=now,
+            expected_version=expected_version,
+        )
+        entry_services.record_visit(
+            work_order,
+            technician,
+            resident_present=resident_present,
+            knock_and_announce_confirmed=False,
+            outcome=VisitRecord.OUTCOME_NO_ACCESS,
+            now=now,
+        )
+
+    return work_order
 
 
 def request_transfer(technician: Person, work_order_number: str, target_trade: str, reason: str, now: datetime, expected_version: int) -> WorkOrder:
