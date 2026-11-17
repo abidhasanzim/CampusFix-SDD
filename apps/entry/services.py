@@ -57,7 +57,11 @@ def check_window(campus_config: CampusConfig, visit_window_start: datetime, noti
     exact-limit passes); Decision 8; AC-006, AC-034, AC-048.
     Injected: none; both timestamps are passed in by the caller.
     """
-    raise NotImplementedError
+    elapsed = visit_window_start - notice_given_at
+    required = campus_config.min_entry_notice
+    if repair_order_filed and campus_config.repair_order_notice is not None:
+        required = campus_config.repair_order_notice
+    return elapsed >= required
 
 
 def send_notice(work_order: WorkOrder, visit_window_start: datetime, notice_given_at: datetime, repair_order_exception_used: bool, now: datetime) -> EntryNotice:
@@ -72,7 +76,13 @@ def send_notice(work_order: WorkOrder, visit_window_start: datetime, notice_give
     Injected: `now` as the notice's creation stamp (distinct from `sent_at`
     email delivery, owned by `notifications`).
     """
-    raise NotImplementedError
+    return EntryNotice.objects.create(
+        work_order=work_order,
+        visit_window_start=visit_window_start,
+        sent_at=now,
+        cancelled=False,
+        repair_order_exception_used=repair_order_exception_used,
+    )
 
 
 def cancel_notice(entry_notice: EntryNotice, now: datetime) -> EntryNotice:
@@ -83,7 +93,11 @@ def cancel_notice(entry_notice: EntryNotice, now: datetime) -> EntryNotice:
     Spec rule: FR-004 (a changed window or preference cancels the old notice); AC-014.
     Injected: `now` for record keeping.
     """
-    raise NotImplementedError
+    if entry_notice.cancelled:
+        raise ValueError("entry notice is already cancelled")
+    entry_notice.cancelled = True
+    entry_notice.save(update_fields=["cancelled"])
+    return entry_notice
 
 
 def record_visit(work_order: WorkOrder, person: Person, resident_present: bool, knock_and_announce_confirmed: bool, outcome: str, now: datetime) -> VisitRecord:
