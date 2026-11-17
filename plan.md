@@ -55,7 +55,7 @@ items, but not expected to be implemented in this pass.
 ### Slice 2 — Supervisor triage: confirm (status-transition engine)
 - **Goal:** A supervisor confirms or overrides a request's category/priority, creating or re-linking its work order; two supervisors triaging at once leave exactly one winner.
 - **Spec sources:** FR-006, FR-014 (decision/reviewer/time), NFR-02, NFR-15, FR-002 (ack notice).
-- **Criteria:** AC-002, AC-013, AC-015, AC-018, AC-037, AC-046, E3, E6, E8.
+- **Criteria:** AC-002, AC-013, AC-015, AC-018, AC-046, E3, E6, E8. (AC-037's Gherkin also requires `GET /api/requests/{tn}`, i.e. `access.get_viewable_request`/`audit.record_view` — Slice 7's job — so AC-037 itself is not fully verifiable until Slice 7 exists, and is listed there instead.)
 - **Tests that should turn green:** none yet — test_plan.md rows of the same IDs.
 - **Skeleton to fill in:** `maintenance.transition` — implemented here as the **complete** T1–T15 table with row locking and `ConcurrencyError`; every later slice only calls it. Also `maintenance.next_work_order_number`/`create_work_order`/`confirm_triage_decision`, `triage.get_triage_item`/`confirm_triage`; routes `GET /api/triage/{tn}`, `POST /api/triage/{tn}/confirm`.
 - **Depends on:** Slice 1.
@@ -103,7 +103,7 @@ items, but not expected to be implemented in this pass.
 ### Slice 7 — Privacy, photos, drafts, settings, and entry-preference changes
 - **Goal:** A resident views their own request history privately (another resident's tracking number is indistinguishable from nonexistent); uploads/serves photos under campus limits; changes entry preference mid-flow; drafts survive; an administrator edits one campus's settings without touching the other.
 - **Spec sources:** FR-001 (banner/draft/photo), FR-003, FR-004 (change-preference), FR-017 (photo), NFR-01, NFR-02, NFR-09, NFR-11, NFR-13, NFR-14 (read-access-preserved half).
-- **Criteria:** AC-010, AC-014, AC-036, AC-039, AC-040, AC-041, AC-043, E1, E2, E10.
+- **Criteria:** AC-010, AC-014, AC-036, AC-037, AC-039, AC-040, AC-041, AC-043, E1, E2, E10.
 - **Skeleton to fill in:** `access.get_viewable_request`/`get_viewable_photo`, `audit.record_view`, `maintenance.get_status_history`, `notifications.list_my_notifications`, `intake.get_request_detail`/`save_draft`/`get_draft`/`change_entry_preference`, `photos.upload_unattached`/`link_to_request`/`link_to_work_record`/`serve_photo`, `campus_settings.update_config`; routes `GET /api/requests/{tn}`, `GET /api/notifications`, `GET`/`PUT /api/requests/draft`, `PUT /api/requests/{tn}/entry-preference`, `POST /api/photos`, `GET /api/photos/{id}`, `PUT /api/campus-settings/{code}`.
 - **Depends on:** Slice 1 (and Slice 3 for the "pending notice" case in AC-014).
 - **Done when:** the listed criteria pass per test_plan.md and all prior slices' tests still pass.

@@ -13,9 +13,12 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from django.db import connection
+from django.db import transaction as db_transaction
 
 from apps.accounts.models import Person
+from apps.audit import services as audit_services
 from apps.housing.models import Building, Room
+from campusfix.exceptions import ConcurrencyError
 from apps.maintenance.models import (
     Equipment,
     HoldRecord,
@@ -28,6 +31,32 @@ from apps.maintenance.models import (
 )
 
 CENTRAL_TIME = ZoneInfo("America/Chicago")
+
+# spec.md "Status lifecycle" table, T1-T15. T1 is (new)->Submitted — handled
+# directly by create_request, since transition() only operates on an
+# existing record. Self-transitions that don't change status (reassignment
+# or a new window while Scheduled, FR-008; entry-preference changes, FR-004)
+# are not T-numbered and are not part of this table.
+_VALID_TRANSITIONS = {
+    (MaintenanceRequest.STATE_SUBMITTED, "T2", MaintenanceRequest.STATE_ACKNOWLEDGED),
+    (MaintenanceRequest.STATE_SUBMITTED, "T3", MaintenanceRequest.STATE_CLOSED),
+    (MaintenanceRequest.STATE_REOPENED, "T3", MaintenanceRequest.STATE_CLOSED),
+    (WorkOrder.STATUS_ACKNOWLEDGED, "T4", WorkOrder.STATUS_SCHEDULED),
+    (WorkOrder.STATUS_SCHEDULED, "T5", WorkOrder.STATUS_IN_PROGRESS),
+    (WorkOrder.STATUS_SCHEDULED, "T6", WorkOrder.STATUS_NO_ACCESS),
+    (WorkOrder.STATUS_NO_ACCESS, "T7", WorkOrder.STATUS_SCHEDULED),
+    (WorkOrder.STATUS_IN_PROGRESS, "T8", WorkOrder.STATUS_ON_HOLD),
+    (WorkOrder.STATUS_ON_HOLD, "T9", WorkOrder.STATUS_IN_PROGRESS),
+    (WorkOrder.STATUS_ON_HOLD, "T10", WorkOrder.STATUS_SCHEDULED),
+    (WorkOrder.STATUS_IN_PROGRESS, "T11", WorkOrder.STATUS_COMPLETED),
+    (WorkOrder.STATUS_SCHEDULED, "T12", WorkOrder.STATUS_ACKNOWLEDGED),
+    (WorkOrder.STATUS_IN_PROGRESS, "T12", WorkOrder.STATUS_ACKNOWLEDGED),
+    (WorkOrder.STATUS_ON_HOLD, "T12", WorkOrder.STATUS_ACKNOWLEDGED),
+    (WorkOrder.STATUS_NO_ACCESS, "T12", WorkOrder.STATUS_ACKNOWLEDGED),
+    (MaintenanceRequest.STATE_COMPLETED, "T13", MaintenanceRequest.STATE_REOPENED),
+    (MaintenanceRequest.STATE_REOPENED, "T14", MaintenanceRequest.STATE_ACKNOWLEDGED),
+    (MaintenanceRequest.STATE_COMPLETED, "T15", MaintenanceRequest.STATE_CLOSED),
+}
 
 
 def next_tracking_number(year: int) -> str:
@@ -55,7 +84,11 @@ def next_work_order_number() -> str:
     Spec rule: Domain Model (WorkOrder.workOrderNumber uniqueness).
     Injected: a dedicated PostgreSQL sequence (Decision 11).
     """
-    raise NotImplementedError
+    with connection.cursor() as cursor:
+        cursor.execute('CREATE SEQUENCE IF NOT EXISTS "cf_work_order_seq"')
+        cursor.execute("SELECT nextval(%s)", ["cf_work_order_seq"])
+        (sequence_value,) = cursor.fetchone()
+    return f"WO-{sequence_value}"
 
 
 def create_request(
@@ -130,7 +163,34 @@ def create_work_order(
     predecessor via `prior_work_order`); T2, T14.
     Injected: `now` as created_at/updated_at and the T2/T14 history timestamp.
     """
-    raise NotImplementedError
+    if not requests:
+        raise ValueError("at least one request is required to create a work order")
+
+    buildings = {request.building_id for request in requests}
+    if len(buildings) > 1:
+        raise ValueError("all requests must belong to the same building")
+
+    work_order = WorkOrder.objects.create(
+        work_order_number=next_work_order_number(),
+        category=category,
+        priority=priority,
+        status=WorkOrder.STATUS_ACKNOWLEDGED,
+        prior_work_order=prior_work_order,
+        version=1,
+        created_at=now,
+        updated_at=now,
+    )
+    work_order.requests.set(requests)
+
+    StatusHistoryEntry.objects.create(
+        record_type=StatusHistoryEntry.WORK_ORDER,
+        record_id=work_order.id,
+        from_status="",
+        to_status=WorkOrder.STATUS_ACKNOWLEDGED,
+        transition_id="T14" if prior_work_order is not None else "T2",
+        changed_at=now,
+    )
+    return work_order
 
 
 def link_request_to_work_order(request: MaintenanceRequest, work_order: WorkOrder, now: datetime) -> WorkOrder:
@@ -169,7 +229,39 @@ def transition(
     Injected: `now` as the status-history/audit timestamp; row locks via
     `SELECT ... FOR UPDATE` (work order first, then linked requests by id).
     """
-    raise NotImplementedError
+    model = type(record)
+    status_field = "request_state" if isinstance(record, MaintenanceRequest) else "status"
+    record_type = StatusHistoryEntry.REQUEST if isinstance(record, MaintenanceRequest) else StatusHistoryEntry.WORK_ORDER
+
+    with db_transaction.atomic():
+        locked = model.objects.select_for_update().get(pk=record.pk)
+
+        if locked.version != expected_version:
+            raise ConcurrencyError(f"{model.__name__} {locked.pk} has changed since it was read")
+
+        from_status = getattr(locked, status_field)
+        if (from_status, transition_id, to_status) not in _VALID_TRANSITIONS:
+            raise ValueError(
+                f"{from_status} -> {to_status} via {transition_id} is not a valid transition"
+            )
+
+        setattr(locked, status_field, to_status)
+        locked.version = expected_version + 1
+        locked.updated_at = now
+        locked.save(update_fields=[status_field, "version", "updated_at"])
+
+        StatusHistoryEntry.objects.create(
+            record_type=record_type,
+            record_id=locked.id,
+            from_status=from_status,
+            to_status=to_status,
+            transition_id=transition_id,
+            changed_at=now,
+        )
+
+        audit_services.record_change(actor, model.__name__, str(locked.id), [status_field], now)
+
+    return locked
 
 
 def record_work(
@@ -262,7 +354,15 @@ def confirm_triage_decision(
     (suggestions, decisions, reviewer identity, and time are logged).
     Injected: `now` as decided_at.
     """
-    raise NotImplementedError
+    if not final_category or not final_priority:
+        raise ValueError("final_category and final_priority are required")
+
+    suggestion.final_category = final_category
+    suggestion.final_priority = final_priority
+    suggestion.reviewer = reviewer
+    suggestion.decided_at = now
+    suggestion.save(update_fields=["final_category", "final_priority", "reviewer", "decided_at"])
+    return suggestion
 
 
 def get_status_history(record_type: str, record_id: int) -> list[StatusHistoryEntry]:

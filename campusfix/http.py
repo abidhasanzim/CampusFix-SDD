@@ -10,7 +10,7 @@ from functools import wraps
 from django.http import HttpRequest, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-from campusfix.exceptions import ValidationError
+from campusfix.exceptions import ConcurrencyError, ValidationError
 
 
 def parse_json_body(request: HttpRequest) -> dict:
@@ -48,6 +48,12 @@ def api_view(fn=None, *, public: bool = False):
                 )
             except PermissionError as exc:
                 return JsonResponse({"error": "forbidden", "message": str(exc)}, status=403)
+            except ConcurrencyError as exc:
+                return JsonResponse({"error": "concurrent_update", "message": str(exc)}, status=409)
+            except LookupError as exc:
+                return JsonResponse({"error": "not_found", "message": str(exc)}, status=404)
+            except ValueError as exc:
+                return JsonResponse({"error": "invalid_input", "message": str(exc)}, status=422)
 
         return csrf_exempt(wrapper)
 
