@@ -8,7 +8,7 @@ from datetime import datetime, time, timedelta
 
 from apps.accounts.models import Person
 from apps.campus_settings.models import CampusConfig
-from apps.entry.models import EntryNotice, EntryPreference, VisitRecord
+from apps.entry.models import EntryNotice, EntryPreference, PreferredTimeSlot, VisitRecord
 from apps.maintenance.models import MaintenanceRequest, WorkOrder
 
 
@@ -23,7 +23,25 @@ def set_preference(request: MaintenanceRequest, preference: str, time_slots: lis
     requires a new visit window and notice); AC-014.
     Injected: `now` as updated_at.
     """
-    raise NotImplementedError
+    if preference == EntryPreference.PREFERRED_SLOTS and not time_slots:
+        raise ValueError("at least one preferred time slot is required")
+
+    entry_preference, _ = EntryPreference.objects.update_or_create(
+        request=request, defaults={"preference": preference, "updated_at": now}
+    )
+
+    entry_preference.time_slots.all().delete()
+    if preference == EntryPreference.PREFERRED_SLOTS:
+        PreferredTimeSlot.objects.bulk_create(
+            PreferredTimeSlot(entry_preference=entry_preference, day_of_week=day, start_time=start, end_time=end)
+            for day, start, end in time_slots
+        )
+
+    pending_notice = EntryNotice.objects.filter(work_order__requests=request, cancelled=False).first()
+    if pending_notice is not None:
+        cancel_notice(pending_notice, now)
+
+    return entry_preference
 
 
 def check_window(campus_config: CampusConfig, visit_window_start: datetime, notice_given_at: datetime, repair_order_filed: bool) -> bool:

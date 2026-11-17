@@ -44,7 +44,7 @@ def get_staff_roles(person: Person) -> list[StaffRole]:
     Front-desk staff); consumed by `access` for permission checks.
     Injected: none.
     """
-    raise NotImplementedError
+    return list(StaffRole.objects.filter(person=person))
 
 
 def get_campus_for_supervisor(person: Person) -> Campus:

@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+from django.db import connection
 
 from apps.accounts.models import Person
 from apps.housing.models import Building, Room
@@ -24,6 +27,8 @@ from apps.maintenance.models import (
     WorkRecord,
 )
 
+CENTRAL_TIME = ZoneInfo("America/Chicago")
+
 
 def next_tracking_number(year: int) -> str:
     """Draw the next tracking number for a calendar year, e.g. CF-2026-00482.
@@ -34,7 +39,12 @@ def next_tracking_number(year: int) -> str:
     Injected: the per-year PostgreSQL sequence (Decision 11); `year` is
     computed by the caller from the server clock in Central time.
     """
-    raise NotImplementedError
+    sequence_name = f"cf_tracking_seq_{year}"
+    with connection.cursor() as cursor:
+        cursor.execute(f'CREATE SEQUENCE IF NOT EXISTS "{sequence_name}"')
+        cursor.execute("SELECT nextval(%s)", [sequence_name])
+        (sequence_value,) = cursor.fetchone()
+    return f"CF-{year}-{sequence_value:05d}"
 
 
 def next_work_order_number() -> str:
@@ -69,7 +79,37 @@ def create_request(
     Spec rule: FR-001 (resident), FR-019 (recordedBy set by staff); T1.
     Injected: `now` as created_at/updated_at and the T1 history timestamp.
     """
-    raise NotImplementedError
+    if not area_type or not exact_location or not description:
+        raise ValueError("area_type, exact_location, and description are required")
+
+    year = now.astimezone(CENTRAL_TIME).year
+    tracking_number = next_tracking_number(year)
+
+    request = MaintenanceRequest.objects.create(
+        tracking_number=tracking_number,
+        owner=owner,
+        recorded_by=recorded_by,
+        building=building,
+        room=room,
+        area_type=area_type,
+        exact_location=exact_location,
+        description=description,
+        onset=onset,
+        resident_urgency=resident_urgency,
+        request_state=MaintenanceRequest.STATE_SUBMITTED,
+        version=1,
+        created_at=now,
+        updated_at=now,
+    )
+    StatusHistoryEntry.objects.create(
+        record_type=StatusHistoryEntry.REQUEST,
+        record_id=request.id,
+        from_status="",
+        to_status=MaintenanceRequest.STATE_SUBMITTED,
+        transition_id="T1",
+        changed_at=now,
+    )
+    return request
 
 
 def create_work_order(
@@ -201,7 +241,12 @@ def save_suggestion(
     Spec rule: FR-014 (suggestions never set the final result); NFR-03.
     Injected: `now` for record keeping only (no decision time yet).
     """
-    raise NotImplementedError
+    return Suggestion.objects.create(
+        request=request,
+        suggested_category=suggested_category,
+        suggested_priority=suggested_priority,
+        duplicate_candidate_tracking_numbers=list(duplicate_candidate_tracking_numbers),
+    )
 
 
 def confirm_triage_decision(

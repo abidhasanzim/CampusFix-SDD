@@ -18,7 +18,7 @@ def get_config(campus: Campus) -> CampusConfig:
     Spec rule: Configuration values table; NFR-13 (separate per campus).
     Injected: none.
     """
-    raise NotImplementedError
+    return CampusConfig.objects.get(campus=campus)
 
 
 def update_config(administrator: Person, campus: Campus, changes: dict, now: datetime) -> CampusConfig:
