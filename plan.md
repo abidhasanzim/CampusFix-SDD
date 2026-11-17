@@ -47,7 +47,7 @@ items, but not expected to be implemented in this pass.
 - **Spec sources:** FR-001, FR-004 (entry-preference save only), FR-014 (suggestion saved, not yet reviewed), FR-019, NFR-02, NFR-10, NFR-14.
 - **Criteria:** AC-001, AC-012, AC-019, AC-030, E14.
 - **Tests that should turn green:** `tests/test_AC001_submit_request.py::test_AC001`, `tests/test_AC012_incomplete_submission.py::test_AC012`, `tests/test_AC012_incomplete_submission.py::test_AC012_control`.
-- **Skeleton to fill in:** `housing.get_current_assignment`, `housing.get_room`, `campus_settings.get_config` (read path), `suggestions.suggest_category_and_priority`, `maintenance.next_tracking_number`/`create_request`/`save_suggestion`, `entry.set_preference`, `audit.record_change`, `notifications.record_notification`, `intake.submit_request`/`submit_phone_report`, `accounts.get_staff_roles` (front-desk check); routes `POST /api/requests`, `POST /api/requests/phone-intake`.
+- **Skeleton to fill in:** `housing.get_current_assignment`, `housing.get_room`, `campus_settings.get_config` (read path), `suggestions.suggest_category_and_priority`/`find_duplicate_candidates`, `maintenance.next_tracking_number`/`create_request`/`save_suggestion`, `entry.set_preference`, `audit.record_change`, `notifications.record_notification`, `intake.submit_request`/`submit_phone_report`, `accounts.get_staff_roles` (front-desk check); routes `POST /api/requests`, `POST /api/requests/phone-intake`.
 - **Depends on:** none (first slice).
 - **Done when:** the listed tests pass and no previously passing test fails.
 - **Status:** not started.
@@ -57,7 +57,7 @@ items, but not expected to be implemented in this pass.
 - **Spec sources:** FR-006, FR-014 (decision/reviewer/time), NFR-02, NFR-15, FR-002 (ack notice).
 - **Criteria:** AC-002, AC-013, AC-015, AC-018, AC-037, AC-046, E3, E6, E8.
 - **Tests that should turn green:** none yet — test_plan.md rows of the same IDs.
-- **Skeleton to fill in:** `maintenance.transition` — implemented here as the **complete** T1–T15 table with row locking and `ConcurrencyError`; every later slice only calls it. Also `maintenance.create_work_order`/`confirm_triage_decision`, `triage.get_triage_item`/`confirm_triage`; routes `GET /api/triage/{tn}`, `POST /api/triage/{tn}/confirm`.
+- **Skeleton to fill in:** `maintenance.transition` — implemented here as the **complete** T1–T15 table with row locking and `ConcurrencyError`; every later slice only calls it. Also `maintenance.next_work_order_number`/`create_work_order`/`confirm_triage_decision`, `triage.get_triage_item`/`confirm_triage`; routes `GET /api/triage/{tn}`, `POST /api/triage/{tn}/confirm`.
 - **Depends on:** Slice 1.
 - **Done when:** the listed criteria pass per test_plan.md and Slice 1's tests still pass.
 - **Status:** not started.
